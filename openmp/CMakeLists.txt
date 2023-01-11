@@ -5,8 +5,15 @@ set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 # llvm/runtimes/ will set OPENMP_STANDALONE_BUILD.
 if (OPENMP_STANDALONE_BUILD OR "${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
-  set(OPENMP_STANDALONE_BUILD TRUE)
-  project(openmp C CXX)
+set(OPENMP_STANDALONE_BUILD TRUE)
+project(openmp C CXX)
+endif()
+
+option(WITH_HPXC "Use HPX threading system." OFF)
+if (WITH_HPXC)
+  find_package(HPX REQUIRED)
+  include_directories("${HPXC_DIR}")
+  add_definitions(-DHPXC)
 endif()
 
 # Must go below project(..)

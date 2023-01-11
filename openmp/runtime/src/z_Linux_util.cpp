@@ -393,7 +393,11 @@ void __kmp_terminate_thread(int gtid) {
 
 #ifdef KMP_CANCEL_THREADS
   KA_TRACE(10, ("__kmp_terminate_thread: kill (%d)\n", gtid));
+#if HPXC
+  status = hpxc_thread_cancel(th->th.th_info.ds.ds_thread);
+#else
   status = pthread_cancel(th->th.th_info.ds.ds_thread);
+#endif
   if (status != 0 && status != ESRCH) {
     __kmp_fatal(KMP_MSG(CantTerminateWorkerThread), KMP_ERR(status),
                 __kmp_msg_null);
@@ -709,8 +713,13 @@ static void *__kmp_launch_monitor(void *thr) {
 #endif // KMP_USE_MONITOR
 
 void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
+#if HPXC
+  hpxc_thread_t handle;
+  hpxc_thread_attr_t thread_attr;
+#else
   pthread_t handle;
   pthread_attr_t thread_attr;
+#endif
   int status;
 
   th->th.th_info.ds.ds_gtid = gtid;
@@ -736,7 +745,11 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
 
   if (KMP_UBER_GTID(gtid)) {
     KA_TRACE(10, ("__kmp_create_worker: uber thread (%d)\n", gtid));
+#ifdef HPXC
+    th->th.th_info.ds.ds_thread = hpxc_thread_self();
+#else
     th->th.th_info.ds.ds_thread = pthread_self();
+#endif
     __kmp_set_stack_info(gtid, th);
     __kmp_check_stack_overlap(th);
     return;
@@ -747,11 +760,20 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
   KMP_MB(); /* Flush all pending memory write invalidates.  */
 
 #ifdef KMP_THREAD_ATTR
+#if HPXC
+  status = hpxc_thread_attr_init(&thread_attr);
+#else
   status = pthread_attr_init(&thread_attr);
+#endif
+
   if (status != 0) {
     __kmp_fatal(KMP_MSG(CantInitThreadAttrs), KMP_ERR(status), __kmp_msg_null);
   }
+#if HPXC
+  status = hpxc_thread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
+#else
   status = pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
+#endif
   if (status != 0) {
     __kmp_fatal(KMP_MSG(CantSetWorkerState), KMP_ERR(status), __kmp_msg_null);
   }
@@ -777,7 +799,11 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
                 gtid, KMP_DEFAULT_STKSIZE, __kmp_stksize, stack_size));
 
 #ifdef _POSIX_THREAD_ATTR_STACKSIZE
+#if HPXC
+  status = hpxc_thread_attr_setstacksize(&thread_attr, stack_size);
+#else
   status = pthread_attr_setstacksize(&thread_attr, stack_size);
+#endif
 #ifdef KMP_BACKUP_STKSIZE
   if (status != 0) {
     if (!__kmp_env_stksize) {
@@ -787,7 +813,11 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
                     "__kmp_stksize = %lu bytes, (backup) final stacksize = %lu "
                     "bytes\n",
                     gtid, KMP_DEFAULT_STKSIZE, __kmp_stksize, stack_size));
+#if HPXC
+      status = hpxc_thread_attr_setstacksize(&thread_attr, stack_size);
+#else
       status = pthread_attr_setstacksize(&thread_attr, stack_size);
+#endif
     }
   }
 #endif /* KMP_BACKUP_STKSIZE */
@@ -799,9 +829,18 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
 
 #endif /* KMP_THREAD_ATTR */
 
+#if HPXC
+  status =
+      hpxc_thread_create(&handle, &thread_attr, __kmp_launch_worker, (void *)th);
+#else
   status =
       pthread_create(&handle, &thread_attr, __kmp_launch_worker, (void *)th);
+#endif
+#ifdef HPXC
+  if (status != 0 || !handle.handle) { // ??? Why do we check handle??
+#else
   if (status != 0 || !handle) { // ??? Why do we check handle??
+#endif
 #ifdef _POSIX_THREAD_ATTR_STACKSIZE
     if (status == EINVAL) {
       __kmp_fatal(KMP_MSG(CantSetWorkerStackSize, stack_size), KMP_ERR(status),
@@ -822,7 +861,11 @@ void __kmp_create_worker(int gtid, kmp_info_t *th, size_t stack_size) {
   th->th.th_info.ds.ds_thread = handle;
 
 #ifdef KMP_THREAD_ATTR
+#ifdef HPXC
+  status = hpxc_thread_attr_destroy(&thread_attr);
+#else
   status = pthread_attr_destroy(&thread_attr);
+#endif
   if (status) {
     kmp_msg_t err_code = KMP_ERR(status);
     __kmp_msg(kmp_ms_warning, KMP_MSG(CantDestroyThreadAttrs), err_code,
@@ -1040,7 +1083,12 @@ void __kmp_reap_worker(kmp_info_t *th) {
   KA_TRACE(
       10, ("__kmp_reap_worker: try to reap T#%d\n", th->th.th_info.ds.ds_gtid));
 
+#ifdef HPXC
+  status = hpxc_thread_join(th->th.th_info.ds.ds_thread, &exit_val);
+#else
   status = pthread_join(th->th.th_info.ds.ds_thread, &exit_val);
+#endif
+
 #ifdef KMP_DEBUG
   /* Don't expose these to the user until we understand when they trigger */
   if (status != 0) {
@@ -1711,8 +1759,15 @@ void __kmp_yield() { sched_yield(); }
 void __kmp_gtid_set_specific(int gtid) {
   if (__kmp_init_gtid) {
     int status;
+
+#ifdef HPXC
+    status = hpxc_setspecific(__kmp_gtid_threadprivate_key,
+                                 (void *)(intptr_t)(gtid + 1));
+#else
     status = pthread_setspecific(__kmp_gtid_threadprivate_key,
                                  (void *)(intptr_t)(gtid + 1));
+#endif
+
     KMP_CHECK_SYSFAIL("pthread_setspecific", status);
   } else {
     KA_TRACE(50, ("__kmp_gtid_set_specific: runtime shutdown, returning\n"));
@@ -1726,7 +1781,12 @@ int __kmp_gtid_get_specific() {
                   "KMP_GTID_SHUTDOWN\n"));
     return KMP_GTID_SHUTDOWN;
   }
+
+#ifdef HPXC  
+  gtid = (int)(size_t)hpxc_getspecific(__kmp_gtid_threadprivate_key);
+#else
   gtid = (int)(size_t)pthread_getspecific(__kmp_gtid_threadprivate_key);
+#endif
   if (gtid == 0) {
     gtid = KMP_GTID_DNE;
   } else {
@@ -1902,8 +1962,14 @@ void __kmp_runtime_initialize(void) {
   /* Set up minimum number of threads to switch to TLS gtid */
   __kmp_tls_gtid_min = KMP_TLS_GTID_MIN;
 
+#ifdef HPXC
+  status = hpxc_key_create(&__kmp_gtid_threadprivate_key,
+                              __kmp_internal_end_dest);
+#else
   status = pthread_key_create(&__kmp_gtid_threadprivate_key,
                               __kmp_internal_end_dest);
+#endif
+
   KMP_CHECK_SYSFAIL("pthread_key_create", status);
   status = pthread_mutexattr_init(&mutex_attr);
   KMP_CHECK_SYSFAIL("pthread_mutexattr_init", status);
@@ -1935,7 +2001,12 @@ void __kmp_runtime_destroy(void) {
   __kmp_itt_destroy();
 #endif /* USE_ITT_BUILD */
 
+#ifdef HPXC
+  status = hpxc_key_delete(__kmp_gtid_threadprivate_key);
+#else
   status = pthread_key_delete(__kmp_gtid_threadprivate_key);
+#endif
+
   KMP_CHECK_SYSFAIL("pthread_key_delete", status);
 
   status = pthread_mutex_destroy(&__kmp_wait_mx.m_mutex);

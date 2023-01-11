@@ -577,7 +577,11 @@ int FTN_STDCALL KMP_EXPAND_NAME(FTN_GET_THREAD_NUM)(void) {
 #endif
     if (!__kmp_init_parallel ||
         (gtid = (int)((kmp_intptr_t)(
+#if HPXC
+             hpxc_getspecific(__kmp_gtid_threadprivate_key)))) == 0) {
+#else
              pthread_getspecific(__kmp_gtid_threadprivate_key)))) == 0) {
+#endif
       return 0;
     }
     --gtid;
